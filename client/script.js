@@ -3,12 +3,7 @@
    ============================================================ */
 
 /* ---------- API base (auto-detect local :3001) ---------- */
-const API_BASE = (() => {
-  const { protocol, hostname, port, origin } = window.location;
-  const isLocal = hostname === 'localhost' || hostname === '127.0.0.1';
-  if (isLocal && port && port !== '3001') return `${protocol}//${hostname}:3001`;
-  return origin;
-})();
+const API_BASE = "https://skill-sync-ai-kmmk.vercel.app";
 
 /* ---------- DOM ---------- */
 const form             = document.getElementById('analyzerForm');
