@@ -23,17 +23,52 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-/* ---------------- CORS ---------------- */
-const corsOptions = {
-  origin: process.env.NODE_ENV === 'production'
+/* ============================================================
+   CORS
+   ============================================================ */
+const DEFAULT_ALLOWED_ORIGINS = [
+  'https://skillsyncai-client.vercel.app', // production frontend
+  'http://localhost:3000',                 // CRA / Next dev
+  'http://localhost:5173',                 // Vite dev
+  'http://localhost:3001'                  // same-origin dev
+];
+
+const normalizeOrigin = (o) => String(o).trim().replace(/\/+$/, '');
+
+const allowedOrigins = (
+  process.env.ALLOWED_ORIGINS
     ? process.env.ALLOWED_ORIGINS.split(',')
-    : '*',
+    : DEFAULT_ALLOWED_ORIGINS
+)
+  .map(normalizeOrigin)
+  .filter(Boolean);
+
+// Matches https://skillsyncai-client.vercel.app and any Vercel preview
+// e.g. https://skillsyncai-client-git-main-user.vercel.app
+const VERCEL_PREVIEW_RE = /^https:\/\/skillsyncai-client[a-z0-9-]*\.vercel\.app$/i;
+
+const corsOptions = {
+  origin(origin, callback) {
+    // No Origin header → curl, health checks, server-to-server, same-origin
+    if (!origin) return callback(null, true);
+
+    const normalized = normalizeOrigin(origin);
+
+    if (allowedOrigins.includes(normalized)) return callback(null, true);
+    if (VERCEL_PREVIEW_RE.test(normalized)) return callback(null, true);
+
+    console.warn('[cors] blocked origin:', origin);
+    return callback(new Error('Not allowed by CORS'));
+  },
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
+  credentials: true,
+  optionsSuccessStatus: 204
 };
+
 app.use(cors(corsOptions));
-app.options('*', cors());
+// Must reuse the SAME options — a bare cors() here would re-allow every origin.
+app.options('*', cors(corsOptions));
 
 /* ---------------- Body parsers ---------------- */
 app.use(express.json({ limit: '10mb' }));
@@ -235,4 +270,5 @@ app.listen(port, () => {
   `;
   console.log(serverInfo);
   console.log(`Access the API at http://localhost:${port}/api/health`);
+  console.log('Allowed CORS origins:', allowedOrigins.join(', '));
 });
