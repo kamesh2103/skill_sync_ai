@@ -3,87 +3,12 @@ const express = require('express');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
 const Groq = require('groq-sdk');
-const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
 const morgan = require('morgan');
 
 const app = express();
 const port = process.env.PORT || 3001;
-
-/* ============================================================
-   CORS — must run BEFORE helmet, morgan, and rate limiting.
-   On Vercel, preflight OPTIONS requests must be answered with
-   the correct headers BEFORE any other middleware can reject them.
-   ============================================================ */
-const DEFAULT_ALLOWED_ORIGINS = [
-  'https://skillsyncai-client.vercel.app',                    // production frontend
-  'https://skillsyncai-client-ddn24x8g2-kmmk.vercel.app',     // current preview deploy
-  'http://localhost:3000',
-  'http://localhost:5173',
-  'http://localhost:3001'
-];
-
-const normalizeOrigin = (o) => String(o).trim().replace(/\/+$/, '');
-
-const allowedOrigins = (
-  process.env.ALLOWED_ORIGINS
-    ? process.env.ALLOWED_ORIGINS.split(',')
-    : DEFAULT_ALLOWED_ORIGINS
-)
-  .map(normalizeOrigin)
-  .filter(Boolean);
-
-// Matches https://skillsyncai-client.vercel.app and any preview like
-// https://skillsyncai-client-ddn24x8g2-kmmk.vercel.app
-const VERCEL_PREVIEW_RE = /^https:\/\/skillsyncai-client[a-z0-9-]*\.vercel\.app$/i;
-
-const isAllowedOrigin = (origin) => {
-  if (!origin) return true; // curl / health checks / same-origin
-  const o = normalizeOrigin(origin);
-  return allowedOrigins.includes(o) || VERCEL_PREVIEW_RE.test(o);
-};
-
-const corsOptions = {
-  origin(origin, callback) {
-    if (isAllowedOrigin(origin)) return callback(null, true);
-    console.warn('[cors] blocked origin:', origin);
-    return callback(new Error('Not allowed by CORS'));
-  },
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true,
-  optionsSuccessStatus: 204
-};
-
-// 1) cors() middleware (handles standard cases)
-app.use(cors(corsOptions));
-
-// 2) Manual fallback — forces headers onto EVERY response, including
-//    preflight OPTIONS that Vercel sometimes intercepts before Express.
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-
-  if (origin && isAllowedOrigin(origin)) {
-    // Echo the exact origin — required when credentials: true
-    res.setHeader('Access-Control-Allow-Origin', normalizeOrigin(origin));
-    res.setHeader('Vary', 'Origin');
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-  } else if (!origin) {
-    // Non-browser callers — permissive, no credentials
-    res.setHeader('Access-Control-Allow-Origin', '*');
-  }
-
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  res.setHeader('Access-Control-Max-Age', '86400');
-
-  if (req.method === 'OPTIONS') {
-    return res.status(204).end();
-  }
-
-  next();
-});
 
 /* ---------------- Security & logging ---------------- */
 app.use(helmet());
@@ -296,9 +221,7 @@ if (!process.env.VERCEL) {
   `;
     console.log(serverInfo);
     console.log(`Access the API at http://localhost:${port}/api/health`);
-    console.log('Allowed CORS origins:', allowedOrigins.join(', '));
   });
 }
 
-// Required for Vercel serverless
 module.exports = app;
