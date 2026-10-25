@@ -11,26 +11,17 @@ const morgan = require('morgan');
 const app = express();
 const port = process.env.PORT || 3001;
 
-/* ---------------- Security & logging ---------------- */
-app.use(helmet());
-app.use(morgan('dev'));
-
-/* ---------------- Rate limiting ---------------- */
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
-  message: 'Too many requests from this IP, please try again later'
-});
-app.use(limiter);
-
 /* ============================================================
-   CORS
+   CORS — must run BEFORE helmet, morgan, and rate limiting.
+   On Vercel, preflight OPTIONS requests must be answered with
+   the correct headers BEFORE any other middleware can reject them.
    ============================================================ */
 const DEFAULT_ALLOWED_ORIGINS = [
-  'https://skillsyncai-client.vercel.app', // production frontend
-  'http://localhost:3000',                 // CRA / Next dev
-  'http://localhost:5173',                 // Vite dev
-  'http://localhost:3001'                  // same-origin dev
+  'https://skillsyncai-client.vercel.app',                    // production frontend
+  'https://skillsyncai-client-ddn24x8g2-kmmk.vercel.app',     // current preview deploy
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'http://localhost:3001'
 ];
 
 const normalizeOrigin = (o) => String(o).trim().replace(/\/+$/, '');
@@ -43,20 +34,19 @@ const allowedOrigins = (
   .map(normalizeOrigin)
   .filter(Boolean);
 
-// Matches https://skillsyncai-client.vercel.app and any Vercel preview
-// e.g. https://skillsyncai-client-git-main-user.vercel.app
+// Matches https://skillsyncai-client.vercel.app and any preview like
+// https://skillsyncai-client-ddn24x8g2-kmmk.vercel.app
 const VERCEL_PREVIEW_RE = /^https:\/\/skillsyncai-client[a-z0-9-]*\.vercel\.app$/i;
+
+const isAllowedOrigin = (origin) => {
+  if (!origin) return true; // curl / health checks / same-origin
+  const o = normalizeOrigin(origin);
+  return allowedOrigins.includes(o) || VERCEL_PREVIEW_RE.test(o);
+};
 
 const corsOptions = {
   origin(origin, callback) {
-    // No Origin header → curl, health checks, server-to-server, same-origin
-    if (!origin) return callback(null, true);
-
-    const normalized = normalizeOrigin(origin);
-
-    if (allowedOrigins.includes(normalized)) return callback(null, true);
-    if (VERCEL_PREVIEW_RE.test(normalized)) return callback(null, true);
-
+    if (isAllowedOrigin(origin)) return callback(null, true);
     console.warn('[cors] blocked origin:', origin);
     return callback(new Error('Not allowed by CORS'));
   },
@@ -66,9 +56,46 @@ const corsOptions = {
   optionsSuccessStatus: 204
 };
 
+// 1) cors() middleware (handles standard cases)
 app.use(cors(corsOptions));
-// Must reuse the SAME options — a bare cors() here would re-allow every origin.
-app.options('*', cors(corsOptions));
+
+// 2) Manual fallback — forces headers onto EVERY response, including
+//    preflight OPTIONS that Vercel sometimes intercepts before Express.
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+
+  if (origin && isAllowedOrigin(origin)) {
+    // Echo the exact origin — required when credentials: true
+    res.setHeader('Access-Control-Allow-Origin', normalizeOrigin(origin));
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  } else if (!origin) {
+    // Non-browser callers — permissive, no credentials
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Max-Age', '86400');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(204).end();
+  }
+
+  next();
+});
+
+/* ---------------- Security & logging ---------------- */
+app.use(helmet());
+app.use(morgan('dev'));
+
+/* ---------------- Rate limiting ---------------- */
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  message: 'Too many requests from this IP, please try again later'
+});
+app.use(limiter);
 
 /* ---------------- Body parsers ---------------- */
 app.use(express.json({ limit: '10mb' }));
@@ -119,14 +146,12 @@ async function extractTextFromPDF(buffer) {
 function extractMatchScore(analysisText) {
   if (!analysisText || typeof analysisText !== 'string') return null;
 
-  // 1) Preferred: explicit machine-readable marker
   const marker = analysisText.match(/MATCH_SCORE_PERCENT\s*=\s*(\d{1,3})/i);
   if (marker) {
     const n = parseInt(marker[1], 10);
     if (Number.isFinite(n) && n >= 0 && n <= 100) return n;
   }
 
-  // 2) Strip HTML then try common phrasings
   const plain = analysisText
     .replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/gi, ' ')
@@ -255,9 +280,10 @@ app.use((err, req, res, next) => {
   });
 });
 
-/* ---------------- Start ---------------- */
-app.listen(port, () => {
-  const serverInfo = `
+/* ---------------- Start (only when running locally, not on Vercel) ---------------- */
+if (!process.env.VERCEL) {
+  app.listen(port, () => {
+    const serverInfo = `
   ╔═══════════════════════════════════════════════════╗
   ║                                                   ║
   ║   Resume Analyzer API v${process.env.npm_package_version || '1.0.0'}             ║
@@ -268,7 +294,11 @@ app.listen(port, () => {
   ║                                                   ║
   ╚═══════════════════════════════════════════════════╝
   `;
-  console.log(serverInfo);
-  console.log(`Access the API at http://localhost:${port}/api/health`);
-  console.log('Allowed CORS origins:', allowedOrigins.join(', '));
-});
+    console.log(serverInfo);
+    console.log(`Access the API at http://localhost:${port}/api/health`);
+    console.log('Allowed CORS origins:', allowedOrigins.join(', '));
+  });
+}
+
+// Required for Vercel serverless
+module.exports = app;
