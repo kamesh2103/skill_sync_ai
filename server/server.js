@@ -6,9 +6,37 @@ const Groq = require('groq-sdk');
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
 const morgan = require('morgan');
+const cors = require('cors'); // <-- Added CORS
 
 const app = express();
 const port = process.env.PORT || 3001;
+
+/* ---------------- CORS ---------------- */
+// Allow requests from your frontend on Render.
+// You can also add 'http://localhost:3000' etc. if needed for local testing.
+const allowedOrigins = [
+  'https://skill-sync-ai-1-vjpi.onrender.com', // <-- Your frontend origin
+  'http://localhost:3000',
+  'http://localhost:5173',
+];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    // Allow requests with no origin (e.g. mobile apps, curl)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) === -1) {
+      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+      return callback(new Error(msg), false);
+    }
+    return callback(null, true);
+  },
+  credentials: true, // if you need to send cookies/auth headers
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
+
+// Handle preflight requests explicitly (Express 4+ needs this for some setups)
+app.options('*', cors());
 
 /* ---------------- Security & logging ---------------- */
 app.use(helmet());
@@ -18,7 +46,7 @@ app.use(morgan('dev'));
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
-  message: 'Too many requests from this IP, please try again later'
+  message: 'Too many requests from this IP, please try again later',
 });
 app.use(limiter);
 
@@ -34,7 +62,7 @@ const upload = multer({
   fileFilter: (req, file, cb) => {
     if (file.mimetype === 'application/pdf') cb(null, true);
     else cb(new Error('Only PDF files are allowed'), false);
-  }
+  },
 });
 
 /* ---------------- Groq client ---------------- */
@@ -45,14 +73,14 @@ app.get('/api/health', (req, res) => {
   res.status(200).json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
-    version: process.env.npm_package_version
+    version: process.env.npm_package_version,
   });
 });
 
 app.get('/api/test', (req, res) => {
   res.status(200).json({
     message: 'API is working',
-    environment: process.env.NODE_ENV || 'development'
+    environment: process.env.NODE_ENV || 'development',
   });
 });
 
@@ -70,25 +98,21 @@ async function extractTextFromPDF(buffer) {
 /* ---------------- Score helpers ---------------- */
 function extractMatchScore(analysisText) {
   if (!analysisText || typeof analysisText !== 'string') return null;
-
   const marker = analysisText.match(/MATCH_SCORE_PERCENT\s*=\s*(\d{1,3})/i);
   if (marker) {
     const n = parseInt(marker[1], 10);
     if (Number.isFinite(n) && n >= 0 && n <= 100) return n;
   }
-
   const plain = analysisText
     .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/gi, ' ')
+    .replace(/ /gi, ' ')
     .replace(/\s+/g, ' ');
-
   const patterns = [
     /match\s*(?:percentage|score)\s*(?:\([^)]*\))?\s*[:\-–—]?\s*(\d{1,3})\s*%/i,
     /overall\s*(?:match|score)\s*[:\-–—]?\s*(\d{1,3})\s*%/i,
     /(\d{1,3})\s*%\s*(?:overall\s*)?match/i,
-    /(\d{1,3})\s*%\s*match\s*(?:score|percentage)?/i
+    /(\d{1,3})\s*%\s*match\s*(?:score|percentage)?/i,
   ];
-
   for (const re of patterns) {
     const m = plain.match(re);
     if (m) {
@@ -109,7 +133,6 @@ function stripScoreMarker(text) {
 /* ---------------- Analyze endpoint ---------------- */
 app.post('/api/analyze', upload.single('resume'), async (req, res) => {
   console.log('Analysis request received');
-
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No resume file uploaded' });
@@ -118,56 +141,58 @@ app.post('/api/analyze', upload.single('resume'), async (req, res) => {
     const jobDescription = req.body.jobDescription;
     if (!jobDescription || jobDescription.trim().length < 20) {
       return res.status(400).json({
-        error: 'Valid job description is required (minimum 20 characters)'
+        error: 'Valid job description is required (minimum 20 characters)',
       });
     }
 
     console.log('Extracting text from PDF...');
     const resumeText = await extractTextFromPDF(req.file.buffer);
     if (!resumeText || resumeText.trim().length < 50) {
-      return res.status(400).json({ error: 'Resume appears to be empty or too short' });
+      return res.status(400).json({
+        error: 'Resume appears to be empty or too short',
+      });
     }
 
     const prompt = `
-    Analyze the following resume against the provided job description and provide a detailed assessment.
+Analyze the following resume against the provided job description and provide a detailed assessment.
 
-    RESUME CONTENT:
-    ${resumeText.substring(0, 10000)} ${resumeText.length > 10000 ? '[content truncated]' : ''}
+RESUME CONTENT:
+${resumeText.substring(0, 10000)}
+${resumeText.length > 10000 ? '[content truncated]' : ''}
 
-    JOB DESCRIPTION:
-    ${jobDescription.substring(0, 5000)} ${jobDescription.length > 5000 ? '[content truncated]' : ''}
+JOB DESCRIPTION:
+${jobDescription.substring(0, 5000)}
+${jobDescription.length > 5000 ? '[content truncated]' : ''}
 
-    ANALYSIS REQUIREMENTS:
-    1. Calculate a Match Percentage (0-100%) based on skills, experience, and qualifications
-    2. List the top 5 matching skills with relevance indicators
-    3. Identify missing qualifications with severity level (critical, important, nice-to-have)
-    4. Provide specific improvement suggestions for better alignment
-    5. Offer a final recommendation (Strong Match, Potential Match, Needs Improvement, Not Suitable)
-    6. Include a strengths and weaknesses summary
+ANALYSIS REQUIREMENTS:
+1. Calculate a Match Percentage (0-100%) based on skills, experience, and qualifications
+2. List the top 5 matching skills with relevance indicators
+3. Identify missing qualifications with severity level (critical, important, nice-to-have)
+4. Provide specific improvement suggestions for better alignment
+5. Offer a final recommendation (Strong Match, Potential Match, Needs Improvement, Not Suitable)
+6. Include a strengths and weaknesses summary
 
-    FORMAT REQUIREMENTS:
-    - Use HTML formatting with semantic structure
-    - Include headings for each section
-    - Use bullet points for lists
-    - Highlight key metrics (like match percentage) with <strong> tags
-    - Ensure the response is professional and constructive
+FORMAT REQUIREMENTS:
+- Use HTML formatting with semantic structure
+- Include headings for each section
+- Use bullet points for lists
+- Highlight key metrics (like match percentage) with <strong> tags
+- Ensure the response is professional and constructive
 
-    OUTPUT CONTRACT (MANDATORY):
-    - After your HTML analysis, on its own final line, output exactly:
-      MATCH_SCORE_PERCENT=<integer 0-100>
-    - Do not wrap that final line in HTML tags.
-    - Example: MATCH_SCORE_PERCENT=78
-    `;
+OUTPUT CONTRACT (MANDATORY):
+- After your HTML analysis, on its own final line, output exactly: MATCH_SCORE_PERCENT=<number>
+- Do not wrap that final line in HTML tags.
+- Example: MATCH_SCORE_PERCENT=78
+`;
 
     console.log('Sending request to Groq AI (qwen/qwen3.8-27b)...');
-
     const completion = await groq.chat.completions.create({
       messages: [{ role: 'user', content: prompt }],
       model: 'qwen/qwen3.8-27b',
       max_completion_tokens: 2000,
       temperature: 0.6,
       top_p: 0.95,
-      reasoning_effort: 'default'
+      reasoning_effort: 'default',
     });
 
     const rawAnalysis = completion.choices[0]?.message?.content || '';
@@ -180,14 +205,13 @@ app.post('/api/analyze', upload.single('resume'), async (req, res) => {
       success: true,
       result: analysisResult,
       matchScore,
-      analyzedAt: new Date().toISOString()
+      analyzedAt: new Date().toISOString(),
     });
   } catch (error) {
     console.error('Analysis error:', error);
-
     const errorResponse = {
       error: 'Failed to analyze resume',
-      details: error.message
+      details: error.message,
     };
     if (process.env.NODE_ENV === 'development') {
       errorResponse.stack = error.stack;
@@ -201,7 +225,7 @@ app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
   res.status(500).json({
     error: 'Internal Server Error',
-    message: err.message
+    message: err.message,
   });
 });
 
@@ -209,16 +233,16 @@ app.use((err, req, res, next) => {
 if (!process.env.VERCEL) {
   app.listen(port, () => {
     const serverInfo = `
-  ╔═══════════════════════════════════════════════════╗
-  ║                                                   ║
-  ║   Resume Analyzer API v${process.env.npm_package_version || '1.0.0'}             ║
-  ║                                                   ║
-  ║   Port: ${port.toString().padEnd(36)}║
-  ║   Environment: ${(process.env.NODE_ENV || 'development').padEnd(25)}║
-  ║   Model: qwen/qwen3.8-27b                         ║
-  ║                                                   ║
-  ╚═══════════════════════════════════════════════════╝
-  `;
+╔═══════════════════════════════════════════════════╗
+║                                                   ║
+║   Resume Analyzer API v${process.env.npm_package_version || '1.0.0'}              ║
+║                                                   ║
+║   Port: ${port.toString().padEnd(36)}║
+║   Environment: ${(process.env.NODE_ENV || 'development').padEnd(25)}║
+║   Model: qwen/qwen3.8-27b                         ║
+║                                                   ║
+╚═══════════════════════════════════════════════════╝
+`;
     console.log(serverInfo);
     console.log(`Access the API at http://localhost:${port}/api/health`);
   });
