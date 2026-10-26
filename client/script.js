@@ -3,7 +3,7 @@
    ============================================================ */
 
 /* ---------- API base (auto-detect local :3001) ---------- */
-const API_BASE = "https://skill-sync-ai-kmmk.vercel.app";
+const API_BASE = "https://skill-sync-ai-jzls.onrender.com";
 
 /* ---------- DOM ---------- */
 const form             = document.getElementById('analyzerForm');
